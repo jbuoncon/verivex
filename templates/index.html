@@ -1,23 +1,124 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport"
-    content="width=device-width, initial-scale=1.0">
-    <title>Verivex</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verivex Link Checker</title>
+<style>
+  :root {
+    --paper: #eef1f4; --panel: #ffffff; --ink: #14213d; --muted: #5a6577; --line: #d3d9e0;
+    --ok: #1b7f5c; --redirected: #a86a00; --broken: #c0392b; --restricted: #6b5b95; --blocked: #5a6577;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  textarea { width: 100%; min-height: 150px; padding: 12px; border: 1px solid var(--line);
+             border-radius: 6px; font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace;
+             background: var(--panel); color: var(--ink); resize: vertical; }
+  button { margin-top: 12px; padding: 10px 20px; border: 0; border-radius: 6px;
+           background: var(--ink); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: progress; }
+  :focus-visible { outline: 3px solid #3b82f6; outline-offset: 2px; }
+  #msg { margin: 16px 0 0; color: var(--muted); min-height: 1.5em; }
+  #summary { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0 12px; }
+  #summary span { padding: 4px 10px; border-radius: 99px; background: var(--panel);
+                  border: 1px solid var(--line); font-size: .9rem; }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: .85rem; color: var(--muted); font-weight: 600; }
+  td.url { font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+  td.detail { color: var(--muted); font-size: .9rem; }
+  .badge { font-weight: 700; white-space: nowrap; }
+  .ok { color: var(--ok); } .redirected { color: var(--redirected); } .broken { color: var(--broken); }
+  .restricted { color: var(--restricted); } .blocked { color: var(--blocked); }
+</style>
 </head>
 <body>
-    <h1>Verivex</h1>
-    <p>Analyze a link before you open it.</p>
+<main>
+  <h1>Verivex Link Checker</h1>
+  <p class="sub">Paste links, one per line, to see which ones still work.</p>
 
-    <form action="/analyze" method="post">
-        <input
-         type="url"
-         name="url"
-         placeholder="Paste a URL..."
-         required
-         >
-         <button type="submit">Analyze</button>
-    </form>
+  <label for="input" hidden>Links to check</label>
+  <textarea id="input" placeholder="https://example.com&#10;https://example.com/missing-page"></textarea>
+  <button id="run">Check links</button>
+  <p id="msg" role="status"></p>
+
+  <div id="summary"></div>
+  <div class="table-wrap" id="results" hidden>
+    <table>
+      <thead><tr><th>Result</th><th>Link</th><th>Details</th><th>Time</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+  const LABELS = { ok: "Working", redirected: "Redirects", broken: "Broken",
+                   restricted: "Restricted", blocked: "Skipped" };
+  const $ = (s) => document.querySelector(s);
+
+  $("#run").addEventListener("click", async () => {
+    const urls = $("#input").value.split(/\s+/).filter(Boolean);
+    if (!urls.length) { $("#msg").textContent = "Paste at least one link."; return; }
+
+    const btn = $("#run");
+    btn.disabled = true;
+    $("#msg").textContent = `Checking ${urls.length} link${urls.length > 1 ? "s" : ""}...`;
+
+    try {
+      const res = await fetch("/api/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls }),
+      });
+      if (!res.ok) throw new Error("Server error " + res.status);
+      render(await res.json());
+      $("#msg").textContent = "";
+    } catch (err) {
+      $("#msg").textContent = "Could not reach the checker: " + err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function render(results) {
+    const counts = {};
+    const rows = $("#rows");
+    rows.replaceChildren();
+
+    for (const r of results) {
+      counts[r.state] = (counts[r.state] || 0) + 1;
+      const tr = document.createElement("tr");
+      const cells = [
+        [LABELS[r.state] + (r.status ? ` (${r.status})` : ""), "badge " + r.state],
+        [r.final_url, "url"],
+        [r.detail, "detail"],
+        [r.ms + " ms", "detail"],
+      ];
+      for (const [text, cls] of cells) {
+        const td = document.createElement("td");
+        td.className = cls;
+        td.textContent = text;  // textContent, never innerHTML
+        tr.appendChild(td);
+      }
+      rows.appendChild(tr);
+    }
+
+    const summary = $("#summary");
+    summary.replaceChildren();
+    for (const state of Object.keys(LABELS)) {
+      if (!counts[state]) continue;
+      const s = document.createElement("span");
+      s.textContent = `${LABELS[state]}: ${counts[state]}`;
+      summary.appendChild(s);
+    }
+    $("#results").hidden = results.length === 0;
+  }
+</script>
 </body>
 </html>
