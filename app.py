@@ -10,7 +10,7 @@ from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 
-HEADERS = {"User-Agent": "Verivex/1.0 (+local tool)"}
+HEADERS = {"User-Agent": "Verivex/2.0 (+local tool)"}
 MAX_URLS = 50
 MAX_REDIRECTS = 5
 TIMEOUT = 8 # seconds per request
