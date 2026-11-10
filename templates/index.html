@@ -3,16 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Verivex Link Checker</title>
+<title>Verivex</title>
 <style>
   :root {
     --paper: #eef1f4; --panel: #ffffff; --ink: #14213d; --muted: #5a6577; --line: #d3d9e0;
     --ok: #1b7f5c; --redirected: #a86a00; --broken: #c0392b; --restricted: #6b5b95; --blocked: #5a6577;
+    --low: #1b7f5c; --caution: #a86a00; --high: #c0392b;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--paper); color: var(--ink);
          font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+  main { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
   h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
   .sub { color: var(--muted); margin: 0 0 24px; }
   textarea { width: 100%; min-height: 150px; padding: 12px; border: 1px solid var(--line);
@@ -23,6 +24,8 @@
   button:disabled { opacity: .6; cursor: progress; }
   :focus-visible { outline: 3px solid #3b82f6; outline-offset: 2px; }
   #msg { margin: 16px 0 0; color: var(--muted); min-height: 1.5em; }
+  #note { margin: 12px 0 0; padding: 10px 12px; border-left: 4px solid var(--caution);
+          background: var(--panel); font-size: .9rem; }
   #summary { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0 12px; }
   #summary span { padding: 4px 10px; border-radius: 99px; background: var(--panel);
                   border: 1px solid var(--line); font-size: .9rem; }
@@ -34,39 +37,51 @@
   td.url { font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
   td.detail { color: var(--muted); font-size: .9rem; }
   .badge { font-weight: 700; white-space: nowrap; }
+  .flag { font-size: .85rem; color: var(--muted); margin-top: 4px; }
   .ok { color: var(--ok); } .redirected { color: var(--redirected); } .broken { color: var(--broken); }
   .restricted { color: var(--restricted); } .blocked { color: var(--blocked); }
+  .low { color: var(--low); } .caution { color: var(--caution); } .high { color: var(--high); }
 </style>
 </head>
 <body>
 <main>
-  <h1>Verivex Link Checker</h1>
-  <p class="sub">Paste links, one per line, to see which ones still work.</p>
+  <h1>Verivex</h1>
+  <p class="sub">Paste links, one per line, to see whether they work and whether they look risky.</p>
 
   <label for="input" hidden>Links to check</label>
-  <textarea id="input" placeholder="https://example.com&#10;https://example.com/missing-page"></textarea>
+  <textarea id="input" placeholder="https://example.com&#10;http://192.168.0.1/update.exe"></textarea>
   <button id="run">Check links</button>
   <p id="msg" role="status"></p>
+  <p id="note" hidden></p>
 
   <div id="summary"></div>
   <div class="table-wrap" id="results" hidden>
     <table>
-      <thead><tr><th>Result</th><th>Link</th><th>Details</th><th>Time</th></tr></thead>
+      <thead><tr><th>Link status</th><th>Link</th><th>Safety</th><th>Details</th><th>Time</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
 </main>
 
 <script>
-  const LABELS = { ok: "Working", redirected: "Redirects", broken: "Broken",
-                   restricted: "Restricted", blocked: "Skipped" };
+  const STATE = { ok: "Working", redirected: "Redirects", broken: "Broken",
+                  restricted: "Restricted", blocked: "Skipped" };
+  const RISK = { low: "No red flags", caution: "Caution", high: "High risk" };
   const $ = (s) => document.querySelector(s);
 
-  $("#run").addEventListener("click", async () => {
+  function cell(text, cls) {
+    const td = document.createElement("td");
+    td.className = cls;
+    td.textContent = text;  // textContent, never innerHTML
+    return td;
+  }
+
+  async function runCheck() {
+    const btn = $("#run");
+    if (btn.disabled) return;  // a check is already running
     const urls = $("#input").value.split(/\s+/).filter(Boolean);
     if (!urls.length) { $("#msg").textContent = "Paste at least one link."; return; }
 
-    const btn = $("#run");
     btn.disabled = true;
     $("#msg").textContent = `Checking ${urls.length} link${urls.length > 1 ? "s" : ""}...`;
 
@@ -84,37 +99,59 @@
     } finally {
       btn.disabled = false;
     }
-  });
+  }
 
-  function render(results) {
-    const counts = {};
+  $("#run").addEventListener("click", runCheck);
+  // Check automatically right after links are pasted (short delay lets the text box update first)
+  $("#input").addEventListener("paste", () => setTimeout(runCheck, 100));
+
+  function render({ results, reputation_checked }) {
+    const note = $("#note");
+    note.hidden = reputation_checked;
+    note.textContent = "Malware and phishing database check is off. Set a Google Safe Browsing key to turn it on. Safety results below come from local red-flag checks only.";
+
     const rows = $("#rows");
     rows.replaceChildren();
+    const counts = {}, stateCounts = {};
 
     for (const r of results) {
-      counts[r.state] = (counts[r.state] || 0) + 1;
+      counts[r.risk] = (counts[r.risk] || 0) + 1;
+      stateCounts[r.state] = (stateCounts[r.state] || 0) + 1;
       const tr = document.createElement("tr");
-      const cells = [
-        [LABELS[r.state] + (r.status ? ` (${r.status})` : ""), "badge " + r.state],
-        [r.final_url, "url"],
-        [r.detail, "detail"],
-        [r.ms + " ms", "detail"],
-      ];
-      for (const [text, cls] of cells) {
-        const td = document.createElement("td");
-        td.className = cls;
-        td.textContent = text;  // textContent, never innerHTML
-        tr.appendChild(td);
+
+      tr.appendChild(cell(STATE[r.state] + (r.status ? ` (${r.status})` : ""), "badge " + r.state));
+      tr.appendChild(cell(r.final_url, "url"));
+
+      const safety = document.createElement("td");
+      const label = document.createElement("div");
+      label.className = "badge " + r.risk;
+      label.textContent = RISK[r.risk];
+      safety.appendChild(label);
+      for (const f of r.flags) {
+        const d = document.createElement("div");
+        d.className = "flag";
+        d.textContent = f;
+        safety.appendChild(d);
       }
+      tr.appendChild(safety);
+
+      tr.appendChild(cell(r.detail, "detail"));
+      tr.appendChild(cell(r.ms + " ms", "detail"));
       rows.appendChild(tr);
     }
 
     const summary = $("#summary");
     summary.replaceChildren();
-    for (const state of Object.keys(LABELS)) {
-      if (!counts[state]) continue;
+    for (const k of Object.keys(STATE)) {
+      if (!stateCounts[k]) continue;
       const s = document.createElement("span");
-      s.textContent = `${LABELS[state]}: ${counts[state]}`;
+      s.textContent = `${STATE[k]}: ${stateCounts[k]}`;
+      summary.appendChild(s);
+    }
+    for (const k of ["high", "caution", "low"]) {
+      if (!counts[k]) continue;
+      const s = document.createElement("span");
+      s.textContent = `${RISK[k]}: ${counts[k]}`;
       summary.appendChild(s);
     }
     $("#results").hidden = results.length === 0;
